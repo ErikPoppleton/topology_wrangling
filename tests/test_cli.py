@@ -1,0 +1,154 @@
+"""The two command line tools, driven end to end on the example system.
+
+This is the workflow the examples directory exists for:
+
+  1. reorder the Slipids DOPC topology for update groups, then
+  2. reorder and rename the CHARMM .gro to match it and the other topologies.
+"""
+
+import contextlib
+import io
+import os
+import shutil
+import tempfile
+import unittest
+
+from _support import example, read, SYSTEM
+from topology_wrangling import AtomOrder, GroFrame, ItpFile, TopologyError
+from topology_wrangling.cli import reorder_gro, update_group_ordering
+
+
+@contextlib.contextmanager
+def quiet():
+    """The tools report progress on stderr; keep it out of the test output."""
+    with contextlib.redirect_stderr(io.StringIO()) as captured:
+        yield captured
+
+
+class WorkflowTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="topowrangle-")
+        self.itp = os.path.join(self.dir, "DOPC.itp")
+        shutil.copy(example("update_group_incompatible.itp"), self.itp)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def path(self, name):
+        return os.path.join(self.dir, name)
+
+    def test_step_one_reorders_the_topology(self):
+        with quiet():
+            self.assertEqual(update_group_ordering.main([self.itp]), 0)
+        out = self.path("DOPC_reordered.itp")
+        self.assertTrue(os.path.exists(out), "the default output name changed")
+        self.assertEqual(read(out), read(example("DOPC_reordered.itp")))
+
+    def test_step_two_reorders_and_renames_the_coordinates(self):
+        out = self.path("system.gro")
+        with quiet():
+            update_group_ordering.main([self.itp, "-o", self.path("top.itp")])
+            code = reorder_gro.main(
+                [example("charmm_DOPC.gro"), self.path("top.itp")]
+                + [example(name) for name, _, _, _ in SYSTEM
+                   if name != "DOPC_reordered.itp"]
+                + ["--alias-file", example("charmm.map"), "-o", out]
+            )
+        self.assertEqual(code, 0)
+
+        frame = GroFrame.read(out)
+        source = GroFrame.read(example("charmm_DOPC.gro"))
+        self.assertEqual(len(frame), len(source))
+        self.assertEqual(sorted(a.tail for a in frame),
+                         sorted(a.tail for a in source))
+        # Every molecule now matches its topology in order and in naming.
+        for name, _, size, count in SYSTEM:
+            path = self.path("top.itp") if name == "DOPC_reordered.itp" \
+                else example(name)
+            top = ItpFile.read(path)
+            blocks = list(frame.iter_residue_blocks(top.residue_name(), size))
+            with self.subTest(name):
+                self.assertEqual(len(blocks), count)
+                for _, block in blocks:
+                    self.assertEqual([a.name for a in block], top.atom_names)
+
+    def test_the_map_carries_the_permutation_to_a_second_run(self):
+        """--write-map then --read-map must reproduce the re-ordering."""
+        with quiet():
+            update_group_ordering.main([self.itp, "-o", self.path("top.itp"),
+                              "--write-map", self.path("map.txt")])
+        text = read(self.path("map.txt"))
+        self.assertIn("resname DOPC", text)
+        self.assertIn("natoms 138", text)
+
+        # --read-map expects coordinates in the ORIGINAL topology order, so
+        # build some by undoing the permutation on the example's DOPC atoms.
+        order = AtomOrder.read_map(self.path("map.txt"))
+        frame = GroFrame.read(example("charmm_DOPC.gro"))
+        frame.atoms = [a for a in frame if a.resname == "DOPC"]
+        inverse = order.inverse()
+        frame.atoms = [a for start, block in
+                       frame.iter_residue_blocks("DOPC", 138)
+                       for a in inverse.apply(block)]
+        frame.renumber()
+        frame.write(self.path("original_order.gro"))
+
+        with quiet():
+            update_group_ordering.main(["--read-map", self.path("map.txt"),
+                              "--gro", self.path("original_order.gro"),
+                              "--gro-out", self.path("back.gro")])
+
+        # Re-ordering by the map must give back the example's own order.
+        back = GroFrame.read(self.path("back.gro"))
+        expected = [a for a in GroFrame.read(example("charmm_DOPC.gro"))
+                    if a.resname == "DOPC"]
+        self.assertEqual([a.name for a in back], [a.name for a in expected])
+        self.assertEqual([a.tail for a in back], [a.tail for a in expected])
+
+    def test_default_output_names(self):
+        with quiet():
+            update_group_ordering.main([self.itp])
+        self.assertTrue(os.path.exists(self.path("DOPC_reordered.itp")))
+
+    def test_charge_group_option(self):
+        with quiet():
+            update_group_ordering.main([self.itp, "--cgnr", "per-atom",
+                              "-o", self.path("per_atom.itp")])
+        atoms = ItpFile.read(self.path("per_atom.itp")).atoms
+        self.assertEqual([a.cgnr for a in atoms], [str(i) for i in range(1, 139)])
+
+
+class ArgumentTest(unittest.TestCase):
+    def test_update_group_ordering_needs_an_input(self):
+        with self.assertRaises(SystemExit), quiet():
+            update_group_ordering.main([])
+
+    def test_read_map_without_gro_is_refused(self):
+        with self.assertRaises(SystemExit), quiet():
+            update_group_ordering.main(["--read-map", "map.txt"])
+
+    def test_resname_with_several_topologies_is_refused(self):
+        with self.assertRaises(SystemExit), quiet():
+            reorder_gro.main([example("charmm_DOPC.gro"), example("TP3.itp"),
+                              example("MG.itp"), "--resname", "TIP3"])
+
+    def test_resname_is_a_shorthand_for_residue(self):
+        out = tempfile.mkdtemp(prefix="topowrangle-")
+        try:
+            with quiet():
+                code = reorder_gro.main([
+                    example("charmm_DOPC.gro"), example("MG.itp"),
+                    "--resname", "MG", "-o", os.path.join(out, "x.gro"),
+                ])
+            self.assertEqual(code, 0)
+        finally:
+            shutil.rmtree(out)
+
+    def test_unknown_out_resname_is_rejected(self):
+        with self.assertRaises((SystemExit, TopologyError)), quiet():
+            reorder_gro.main([example("charmm_DOPC.gro"), example("MG.itp"),
+                              "--out-resname", "NOPE=X"])
+
+
+if __name__ == "__main__":
+    unittest.main()

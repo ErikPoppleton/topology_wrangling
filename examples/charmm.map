@@ -1,0 +1,13 @@
+; Name differences between a CHARMM-GUI .gro and the CHARMM-GUI FF-Converter
+; .itp files in this directory.  Pass with --alias-file.
+;
+;        <gro name> <itp name>
+residue  TIP3       TP3
+residue  SOD        Na+
+residue  CLA        Cl-
+residue  CAL        CA
+;     <residue> <itp name> <gro name>
+atom  TP3       O          OH2
+atom  Na+       Na+        SOD
+atom  Cl-       Cl-        CLA
+atom  CA        CA         CAL

@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+
+# tool output written next to its input
+*_reordered.gro
