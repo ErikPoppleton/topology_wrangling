@@ -128,6 +128,38 @@ class Atom:
         return line
 
 
+# The particle-type column of [ atomtypes ]: A(tom), S(hell), V/D (virtual).
+PTYPE_CODES = ("A", "S", "V", "D")
+
+
+class AtomType:
+    """One record of the [ atomtypes ] directive of a force field.
+
+    Note that its ``charge`` is the force field's default for the type, which
+    a molecule's [ atoms ] records routinely override -- Slipids gives the
+    type NTL a charge of -0.60, while the nitrogen of DOPC carries +0.20.  For
+    a per-atom charge, read the molecule, not the force field.
+    """
+
+    __slots__ = ("name", "atomic_number", "mass", "charge", "ptype", "sigma",
+                 "epsilon", "comment")
+
+    def __init__(self, name, atomic_number=None, mass=None, charge=None,
+                 ptype="A", sigma=None, epsilon=None, comment=""):
+        self.name = name
+        self.atomic_number = atomic_number
+        self.mass = mass
+        self.charge = charge
+        self.ptype = ptype
+        self.sigma = sigma          # nm
+        self.epsilon = epsilon      # kJ/mol
+        self.comment = comment
+
+    def __repr__(self):
+        return "AtomType(%r, sigma=%r, epsilon=%r)" % (self.name, self.sigma,
+                                                       self.epsilon)
+
+
 class Line:
     """One physical line of the file, tagged with the directive it is inside."""
 
@@ -185,6 +217,7 @@ class ItpFile:
         self.lines = lines
         self.path = path
         self._atoms = None
+        self._atomtypes = None
 
     # -- construction ----------------------------------------------------
 
@@ -253,6 +286,63 @@ class ItpFile:
         return self.path or "<topology>"
 
     @property
+    def atomtypes(self):
+        """The [ atomtypes ] records of a force field, by type name."""
+        if self._atomtypes is None:
+            self._atomtypes = self._read_atomtypes()
+        return self._atomtypes
+
+    def _read_atomtypes(self):
+        """Parse [ atomtypes ], whose columns vary between force fields.
+
+        GROMACS accepts the directive with or without an atomic number and
+        with or without a bonded type, so counting columns from the left is
+        unreliable.  The particle-type column is a lone A, S, V or D, and
+        everything else is placed relative to it: sigma and epsilon follow,
+        mass and charge precede.
+        """
+        types = {}
+        for entry in self.lines:
+            if entry.directive != "atomtypes" or not entry.is_data():
+                continue
+            tok = entry.data
+            where = [i for i, t in enumerate(tok)
+                     if t.upper() in PTYPE_CODES and len(t) == 1]
+            if not where or len(tok) < 4:
+                raise TopologyError(
+                    "%s: cannot read [ atomtypes ] line (no particle-type "
+                    "column): %r" % (self._where(), entry.raw))
+            at = where[0]
+            if at < 2 or at + 2 >= len(tok):
+                raise TopologyError(
+                    "%s: malformed [ atomtypes ] line: %r"
+                    % (self._where(), entry.raw))
+            name = tok[0]
+            # Between the name and the mass sit an optional bonded type and an
+            # optional atomic number, in that order; the number is whichever
+            # of them parses as one.
+            atomic_number = None
+            for token in tok[1:max(at - 2, 1)]:
+                atomic_number = _maybe_int(token)
+                if atomic_number is not None:
+                    break
+            atom_type = AtomType(
+                name=name,
+                atomic_number=atomic_number,
+                mass=_maybe_float(tok[at - 2]),
+                charge=_maybe_float(tok[at - 1]),
+                ptype=tok[at].upper(),
+                sigma=_maybe_float(tok[at + 1]),
+                epsilon=_maybe_float(tok[at + 2]),
+                comment=entry.comment,
+            )
+            types[name] = atom_type
+        if not types:
+            raise TopologyError("%s: no [ atomtypes ] directive found"
+                                % self._where())
+        return types
+
+    @property
     def natoms(self):
         return len(self.atoms)
 
@@ -314,6 +404,23 @@ class ItpFile:
         """Adjacency lists (1-based) built from [ bonds ]."""
         return bond_graph(self.bonds(), self.natoms)
 
+    def connectivity(self):
+        """Every atom pair held at a fixed distance, not just [ bonds ].
+
+        Rigid water has no [ bonds ] at all -- its geometry lives in
+        [ settles ], and other molecules put bonds in [ constraints ] -- so a
+        drawing or a graph traversal that used [ bonds ] alone would show such
+        a molecule as unconnected dots.  A [ settles ] row names the first atom
+        of a three-site water, whose other two sites follow it.
+        """
+        pairs = self.bonds()
+        pairs.extend((int(t[0]), int(t[1])) for t, _ in self.rows("constraints"))
+        for tokens, _ in self.rows("settles"):
+            first = int(tokens[0])
+            if first + 2 <= self.natoms:
+                pairs.extend([(first, first + 1), (first, first + 2)])
+        return pairs
+
     # -- editing ---------------------------------------------------------
 
     def permute(self, order, cgnr_mode="renumber", sort_rows=True):
@@ -372,6 +479,20 @@ class ItpFile:
             i += 1
 
         return ItpFile(parse_lines(out), self.path)
+
+
+def _maybe_float(text):
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _maybe_int(text):
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
 
 
 def _remap(tokens, spec, new_index):

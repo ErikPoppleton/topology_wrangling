@@ -15,7 +15,8 @@ import unittest
 
 from _support import example, read, SYSTEM
 from topology_wrangling import AtomOrder, GroFrame, ItpFile, TopologyError
-from topology_wrangling.cli import reorder_gro, update_group_ordering
+from topology_wrangling.cli import (draw_colorbar, draw_itp, reorder_gro,
+                                    update_group_ordering)
 
 
 @contextlib.contextmanager
@@ -116,6 +117,94 @@ class WorkflowTest(unittest.TestCase):
                               "-o", self.path("per_atom.itp")])
         atoms = ItpFile.read(self.path("per_atom.itp")).atoms
         self.assertEqual([a.cgnr for a in atoms], [str(i) for i in range(1, 139)])
+
+
+class DrawToolTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="topowrangle-draw-")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def test_default_output_is_svg_beside_the_input(self):
+        itp = os.path.join(self.dir, "TP3.itp")
+        shutil.copy(example("TP3.itp"), itp)
+        with quiet():
+            self.assertEqual(draw_itp.main([itp, "--iterations", "20"]), 0)
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "TP3.svg")))
+
+    def test_png_output(self):
+        out = os.path.join(self.dir, "water.png")
+        with quiet():
+            draw_itp.main([example("TP3.itp"), "-o", out, "--iterations", "20",
+                           "--dpi", "72"])
+        self.assertGreater(os.path.getsize(out), 0)
+
+    def test_options_reach_the_drawing(self):
+        out = os.path.join(self.dir, "dopc.svg")
+        with quiet():
+            draw_itp.main([example("DOPC_reordered.itp"), "-o", out,
+                           "--color-by", "charge", "--cmap", "bwr",
+                           "--hide-hydrogens", "--label", "type",
+                           "--iterations", "20"])
+        text = read(out)
+        self.assertIn("<circle", text)
+        types = {a.type for a in ItpFile.read(example("DOPC_reordered.itp")).atoms}
+        self.assertTrue(any(">%s<" % t in text for t in types))
+
+    def test_a_force_field_parameter_overlay(self):
+        out = os.path.join(self.dir, "eps.svg")
+        with quiet():
+            code = draw_itp.main([
+                example("DOPC_reordered.itp"), "-o", out,
+                "--color-by", "epsilon",
+                "--ff", example("slipids_ffnonbonded.itp"),
+                "--hide-hydrogens",
+            ])
+        self.assertEqual(code, 0)
+        text = read(out)
+        self.assertIn("LJ epsilon (kJ/mol)", text)
+        self.assertNotIn("viridis", text)
+
+    def test_epsilon_without_a_force_field_is_refused(self):
+        with self.assertRaises(TopologyError), quiet():
+            draw_itp.main([example("DOPC_reordered.itp"), "-o",
+                           os.path.join(self.dir, "x.svg"),
+                           "--color-by", "epsilon"])
+
+    def test_bare_panels_and_a_shared_colour_bar(self):
+        """The workflow for putting several molecules in one figure."""
+        panel = os.path.join(self.dir, "panel.svg")
+        bar = os.path.join(self.dir, "bar.svg")
+        with quiet():
+            draw_itp.main([example("DOPC_reordered.itp"), "-o", panel,
+                           "--color-by", "charge", "--range", "-1.58", "1.58",
+                           "--bare", "--hide-hydrogens"])
+            draw_colorbar.main(["--color-by", "charge", "--range",
+                                "-1.58", "1.58", "-o", bar])
+        panel_text = read(panel)
+        self.assertNotIn("partial charge", panel_text)
+        self.assertNotIn("atoms", panel_text)
+        self.assertIn("<circle", panel_text)
+        self.assertIn("partial charge (e)", read(bar))
+
+    def test_a_capped_scale_is_marked_on_the_shared_bar(self):
+        bar = os.path.join(self.dir, "capped.svg")
+        with quiet():
+            draw_colorbar.main(["--color-by", "epsilon", "--range",
+                                "0.0293", "0.9205", "--extend", "max",
+                                "-o", bar])
+        self.assertIn("&gt;0.92", read(bar))
+
+    def test_a_colour_bar_needs_its_range(self):
+        with self.assertRaises(SystemExit), quiet():
+            draw_colorbar.main(["--color-by", "charge", "-o",
+                                os.path.join(self.dir, "bar.svg")])
+
+    def test_an_unwritable_format_is_reported(self):
+        with self.assertRaises(TopologyError), quiet():
+            draw_itp.main([example("TP3.itp"), "-o",
+                           os.path.join(self.dir, "x.tiff")])
 
 
 class ArgumentTest(unittest.TestCase):

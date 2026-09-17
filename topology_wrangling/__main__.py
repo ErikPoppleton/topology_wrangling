@@ -6,6 +6,8 @@ import sys
 
 TOOLS = {
     "update-group-ordering": "topology_wrangling.cli.update_group_ordering",
+    "draw-colorbar": "topology_wrangling.cli.draw_colorbar",
+    "draw-itp": "topology_wrangling.cli.draw_itp",
     "reorder-gro": "topology_wrangling.cli.reorder_gro",
 }
 
