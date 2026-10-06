@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 
 TOOLS = {
+    "amber-style-index": "topology_wrangling.cli.amber_style_index",
     "update-group-ordering": "topology_wrangling.cli.update_group_ordering",
     "draw-colorbar": "topology_wrangling.cli.draw_colorbar",
     "draw-itp": "topology_wrangling.cli.draw_itp",

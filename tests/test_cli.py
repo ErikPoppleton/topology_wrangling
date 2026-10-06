@@ -15,8 +15,9 @@ import unittest
 
 from _support import example, read, SYSTEM
 from topology_wrangling import AtomOrder, GroFrame, ItpFile, TopologyError
-from topology_wrangling.cli import (draw_colorbar, draw_itp, reorder_gro,
-                                    update_group_ordering)
+from topology_wrangling.cli import (amber_style_index, draw_colorbar, draw_itp,
+                                    reorder_gro, update_group_ordering)
+from topology_wrangling.cli.common import run
 
 
 @contextlib.contextmanager
@@ -205,6 +206,62 @@ class DrawToolTest(unittest.TestCase):
         with self.assertRaises(TopologyError), quiet():
             draw_itp.main([example("TP3.itp"), "-o",
                            os.path.join(self.dir, "x.tiff")])
+
+
+def read_ndx(path):
+    groups, name = {}, None
+    for line in read(path).splitlines():
+        if line.startswith("["):
+            name = line.strip("[] ")
+            groups[name] = []
+        elif line.strip():
+            groups[name].extend(int(i) for i in line.split())
+    return groups
+
+
+class AmberIndexTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="topowrangle-ndx-")
+        self.gro = os.path.join(self.dir, "system.gro")
+        shutil.copy(example("charmm_DOPC.gro"), self.gro)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def path(self, name):
+        return os.path.join(self.dir, name)
+
+    def test_default_output_is_beside_the_input(self):
+        with quiet():
+            self.assertEqual(amber_style_index.main([self.gro]), 0)
+        groups = read_ndx(self.path("system_amber.ndx"))
+        self.assertEqual(list(groups), ["PC", "OL"])
+        self.assertEqual(len(groups["PC"]), 128 * 38)
+        self.assertEqual(len(groups["OL"]), 128 * 100)
+        self.assertEqual(groups["PC"][:3], [1, 2, 3])
+
+    def test_a_topology_gives_the_same_groups(self):
+        with quiet():
+            amber_style_index.main([self.gro, "-o", self.path("dist.ndx")])
+            amber_style_index.main([self.gro, example("DOPC_reordered.itp"),
+                                    "-o", self.path("bond.ndx")])
+        self.assertEqual(read(self.path("dist.ndx")),
+                         read(self.path("bond.ndx")))
+
+    def test_append_keeps_the_existing_groups(self):
+        out = self.path("index.ndx")
+        with open(out, "w") as handle:
+            handle.write("[ System ]\n1 2 3\n\n")
+        with quiet():
+            amber_style_index.main([self.gro, "-o", out, "--append"])
+        self.assertEqual(list(read_ndx(out)), ["System", "PC", "OL"])
+
+    def test_a_non_lipid_topology_is_an_error(self):
+        with self.assertRaises(SystemExit) as caught, quiet() as err:
+            run(lambda: amber_style_index.main([self.gro,
+                                                example("TP3.itp")]))
+        self.assertEqual(caught.exception.code, 1)
+        self.assertIn("not one of DOPC/DMPC/DMPG", err.getvalue())
 
 
 class ArgumentTest(unittest.TestCase):

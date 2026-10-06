@@ -18,6 +18,7 @@ text on demand.
 from __future__ import annotations
 
 from .errors import TopologyError
+from .pbc import Box
 
 RESID_COLS = (0, 5)
 RESNAME_COLS = (5, 10)
@@ -227,6 +228,11 @@ class GroFrame:
                 known.add(atom.resname)
                 seen.append(atom.resname)
         return seen
+
+    @property
+    def periodic_box(self):
+        """The box line as a pbc.Box, for minimum-image distances."""
+        return Box.parse(self.box, "%s: " % self._where())
 
     def justifies_left(self, cols=ATOMNAME_COLS):
         """Whether this file left-justifies the name in the given columns.

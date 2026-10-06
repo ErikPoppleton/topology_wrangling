@@ -36,8 +36,9 @@ import argparse
 from ..errors import TopologyError
 from ..gro import GroFrame
 from ..itp import ItpFile
-from ..residues import AliasTable, ResidueTopology, apply_topologies
-from .common import add_alias_options, default_out, report, run
+from ..residues import ResidueTopology, apply_topologies
+from .common import (add_alias_options, alias_table, default_out,
+                     report, run)
 
 
 def build_parser():
@@ -73,28 +74,16 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    table = AliasTable()
-    for path in args.alias_file:
-        table.load(path)
-    for spec in args.residue:
-        table.add_residue_spec(spec)
-    default_resname = None
-    if len(args.itp) == 1:
-        # With one topology an --alias needs no residue prefix.
-        default_resname = ItpFile.read(args.itp[0]).residue_names[0]
-    for spec in args.alias:
-        table.add_atom_spec(spec, default_resname)
+    itps = [ItpFile.read(path) for path in args.itp]
+    table = alias_table(args, itps)
 
     if args.resname:
-        if len(args.itp) != 1:
+        if len(itps) != 1:
             parser.error("--resname needs a single topology; with several use "
                          "--residue GRO_NAME=ITP_NAME")
-        table.add_residue(args.resname, default_resname)
+        table.add_residue(args.resname, itps[0].residue_names[0])
 
-    topologies = [
-        ResidueTopology.from_itp(ItpFile.read(path), table)
-        for path in args.itp
-    ]
+    topologies = [ResidueTopology.from_itp(itp, table) for itp in itps]
     out_resnames = parse_out_resnames(args.out_resname, topologies, parser)
 
     for top in topologies:

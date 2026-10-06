@@ -98,3 +98,20 @@ def bond_graph(bonds, natoms):
         graph[ai].append(aj)
         graph[aj].append(ai)
     return graph
+
+
+def heavy_parents(atoms, graph):
+    """{hydrogen index: the heavy atom it belongs to}, 1-based.
+
+    A hydrogen bonded to several heavy atoms belongs to the lowest-numbered of
+    them; one bonded to none is left out, for the caller to decide about.
+    """
+    hydrogen = [is_hydrogen(a) for a in atoms]
+    parents = {}
+    for idx in range(1, len(atoms) + 1):
+        if not hydrogen[idx - 1]:
+            continue
+        heavies = [n for n in graph.get(idx, ()) if not hydrogen[n - 1]]
+        if heavies:
+            parents[idx] = min(heavies)
+    return parents

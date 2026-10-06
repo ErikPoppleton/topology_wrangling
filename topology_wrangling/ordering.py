@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from .chem import is_hydrogen
+from .chem import heavy_parents, is_hydrogen
 from .errors import TopologyError
 from .mapping import AtomOrder
 
@@ -27,15 +27,11 @@ def update_group_order(atoms, graph, resname=None):
     hydrogen = [is_hydrogen(a) for a in atoms]
     natoms = len(atoms)
 
+    parents = heavy_parents(atoms, graph)
     attached = defaultdict(list)   # heavy atom (old index) -> its hydrogens
-    placed = set()
-    for idx in range(1, natoms + 1):
-        if not hydrogen[idx - 1]:
-            continue
-        heavies = [n for n in graph.get(idx, ()) if not hydrogen[n - 1]]
-        if heavies:
-            attached[min(heavies)].append(idx)
-            placed.add(idx)
+    for idx, parent in parents.items():
+        attached[parent].append(idx)
+    placed = set(parents)
 
     old_for_new = []
     for idx in range(1, natoms + 1):
